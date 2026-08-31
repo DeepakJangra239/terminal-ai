@@ -92,14 +92,9 @@ The script is interactive and will prompt you for three choices:
 ?? create a tar.gz of this folder excluding node_modules
 ?? restart docker desktop
 
-# Explain last error (or pass a command)
-explain
-explain "docker build -t myapp ."
-
 # Direct CLI usage
 terminal-ai "list all kubernetes pods in namespace production"
-tai --mode explain "permission denied on /usr/local/bin"
-tai --check  # verify server connectivity
+tai "list all kubernetes pods in namespace production"
 ```
 
 ### Managing the Inference Server
