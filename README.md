@@ -4,19 +4,24 @@ Turn any macOS terminal (Ghostty, iTerm2, Terminal.app, Warp, etc.) into an AI-p
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| **NL → Command** | Press `Ctrl+G` or type `??` to convert natural language to shell commands |
-| **Explain Errors** | Run `explain` after a failed command to get a 3-bullet diagnosis + fix |
-| **Tab Completions** | Carapace-powered completions for git, docker, kubectl, brew, and 300+ tools |
-| **History Ghost** | Atuin-powered sync + Ctrl+R fuzzy search across sessions |
+| Feature             | Description                                                                                                |
+| ------------------- | ---------------------------------------------------------------------------------------------------------- |
+| **NL → Command**    | Press `Ctrl+G` or type `??` to convert natural language to shell commands                                  |
+| **Explain Errors**  | Run `explain` after a failed command to get a 3-bullet diagnosis + fix                                     |
+| **Tab Completions** | Carapace-powered completions for git, docker, kubectl, brew, and 300+ tools                                |
+| **History Ghost**   | Atuin-powered sync + Ctrl+R fuzzy search across sessions                                                   |
 | **Local Inference** | Three backends: **BaseRT** (native Metal, auto-unload), **mlx_lm** (Apple MLX), **oMLX** (tiered KV cache) |
-| **Any Terminal** | Works in zsh/bash/fish across Ghostty, iTerm2, Terminal.app, Warp, Alacritty, etc. |
+| **Any Terminal**    | `terminal-ai` CLI works in zsh/bash/fish; the `??`/`Ctrl+G` widget is zsh-based (confirmed on zsh)         |
 
 ## Quick Start
 
 ```bash
-# 1. Make executable and run
+# 1. Run the installer
+# (A) One-liner — no clone needed (download-then-run lets you inspect it first;
+#     `curl ... | bash` works too):
+#   curl -fsSL https://raw.githubusercontent.com/DeepakJangra239/terminal-ai/main/install-terminal-ai.sh -o /tmp/ta.sh
+#   bash /tmp/ta.sh
+# (B) Clone first:
 chmod +x install-terminal-ai.sh
 ./install-terminal-ai.sh
 
@@ -38,23 +43,34 @@ The script is interactive and will prompt you for three choices:
 
 ### 1. Choose Inference Backend
 
-| Option | Backend | Speed | Notes |
-|--------|---------|-------|-------|
-| **1** | **BaseRT** (recommended) | ~35 tok/s | Native Metal, no MLX, auto-unloads after 5 min idle without killing process |
-| 2 | mlx_lm | ~28 tok/s | Apple MLX, requires Python + pip packages |
-| 3 | oMLX | varies | DMG app with tiered hot+cold KV cache (manual DMG install) |
+| Option | Backend                  | Speed     | Notes                                                                       |
+| ------ | ------------------------ | --------- | --------------------------------------------------------------------------- |
+| **1**  | **BaseRT** (recommended) | ~35 tok/s | Native Metal, no MLX, auto-unloads after 5 min idle without killing process |
+| 2      | mlx_lm                   | ~28 tok/s | Apple MLX, requires Python + pip packages                                   |
+| 3      | oMLX                     | varies    | DMG app with tiered hot+cold KV cache (manual DMG install)                  |
 
 **Default: BaseRT** — best balance of speed, memory efficiency, and zero-config.
 
 ### 2. Choose Model
 
-| Option | Model | Size (BaseRT) | Size (MLX) | Notes |
-|--------|-------|---------------|------------|-------|
-| **1** | **Qwen3.5-4B** (winner) | 2.1 GB | 2.9 GB | Won bake-off (0.824 vs Phi 0.713) |
-| 2 | Phi-4-mini 3.8B | 2.0 GB | 2.0 GB | Fallback for 8 GB RAM |
-| 3 | Both | 4.1 GB | 4.9 GB | A/B comparison |
+| Option | Model                 | Size (BaseRT) | Size (MLX) | Notes                                                            |
+| ------ | --------------------- | ------------- | ---------- | ---------------------------------------------------------------- |
+| **1**  | **Qwen3.5-4B** (recommended winner) | 2.4 GB (.base) | 2.9 GB (MLX) | Eval v2: ~68% accuracy, 1/1000 wrong, CJK-clean on BaseRT + oMLX |
+| 2      | Qwen3-4B (baseline)  | 2.1 GB        | 2.9 GB     | Preconverted BaseRT catalog entry (port 18789)                  |
+| 3      | Phi-4-mini 3.8B      | 2.0 GB        | 2.0 GB     | Fallback for 8 GB RAM                                           |
+| 4      | Both Qwen3-4B + Qwen3.5-4B | 4.5 GB | 4.9 GB     | A/B comparison (18789 + 18790)                                  |
 
-**Default: Qwen3.5-4B** — best quality/size ratio.
+**Default: Qwen3.5-4B** — clean IPs (no CJK digit corruption), best instruction-following.
+
+> **Eval v2 (see `eval/RESULTS_v2.md`):** a 1,000-query harness (tmux/screen/ssh/ports/general)
+> shows **Qwen3.5-4B + the new pipeline is the best choice** (~68% accuracy, only 1/1000
+> wrong, no CJK digit corruption). The `1`→`题` corruption is **Qwen3-4B-checkpoint-specific**;
+> Qwen3.5-4B is clean on both BaseRT and oMLX. Prefer **Qwen3.5-4B** and the **official Qwen
+> sampling config** (`temperature=0.7, top_p=0.8, top_k=20, presence_penalty=1.5`,
+> `enable_thinking=False`). The installer is **fully standalone**: the canonical CLI/widget
+> live embedded in `install-terminal-ai.sh` (byte-identical copies are written fresh into the
+> installing user's home), so the curl one-liner above needs no clone. A `payloads/` dir in
+> the repo root is a **local dev copy only — gitignored**, not read at install time.
 
 ### 3. Deterministic Completions
 
@@ -75,13 +91,13 @@ The script is interactive and will prompt you for three choices:
 
 ### Key Bindings
 
-| Keys | Action |
-|------|--------|
-| `Ctrl+G` | Open NL→command widget (gum input or inline vared) |
-| `?? <prompt>` | Inline NL→command (e.g., `?? kill process on port 3000`) |
-| `tai <prompt>` | CLI alias for `terminal-ai` |
-| `Ctrl+R` | Atuin history search (if completions enabled) |
-| `Tab` | Carapace completions (git, docker, kubectl, brew, etc.) |
+| Keys           | Action                                                   |
+| -------------- | -------------------------------------------------------- |
+| `Ctrl+G`       | Open NL→command widget (gum input or inline vared)       |
+| `?? <prompt>`  | Inline NL→command (e.g., `?? kill process on port 3000`) |
+| `tai <prompt>` | CLI alias for `terminal-ai`                              |
+| `Ctrl+R`       | Atuin history search (if completions enabled)            |
+| `Tab`          | Carapace completions (git, docker, kubectl, brew, etc.)  |
 
 ### Commands
 
@@ -102,8 +118,8 @@ tai "list all kubernetes pods in namespace production"
 The installer auto-starts your chosen backend on first run. If it stops:
 
 ```bash
-# BaseRT (default, port 18789)
-~/.basert/basert serve basecompute/Qwen3-4B --port 18789 --idle-timeout 300 &
+# BaseRT (default, port 18790)
+~/.basert/basert serve Qwen/Qwen3.5-4B --port 18790 --idle-timeout 300 &
 
 # mlx_lm (port 7821)
 mlx_lm.server --model ~/.cache/terminal-ai/models/qwen3.5-4b-mlx-4bit --port 7821 &
@@ -122,8 +138,8 @@ Edit `~/.zshrc` and change the export block:
 
 ```bash
 # BaseRT Qwen (default)
-export TERMINAL_AI_URL="http://127.0.0.1:18789/v1/chat/completions"
-export TERMINAL_AI_MODEL="basecompute/Qwen3-4B"
+export TERMINAL_AI_URL="http://127.0.0.1:18790/v1/chat/completions"
+export TERMINAL_AI_MODEL="Qwen3.5-4B"
 
 # mlx_lm Qwen
 # export TERMINAL_AI_URL="http://127.0.0.1:7821/v1/chat/completions"
@@ -146,14 +162,14 @@ This removes shell config, launch agents, and CLI wrappers — **keeps downloade
 
 ## File Locations
 
-| Path | Purpose |
-|------|---------|
-| `~/.cache/terminal-ai/models/` | MLX models (Qwen/Phi safetensors) |
-| `~/Library/Caches/baseRT/models/` | BaseRT .base models |
-| `~/.config/zsh/terminal-ai.zsh` | Zsh widget + aliases |
-| `~/.local/bin/terminal-ai` | Python CLI (`tai`, `ghostty-ai` symlinks) |
-| `~/Library/LaunchAgents/com.terminal-ai.plist` | BaseRT launch agent (disabled by default) |
-| `~/.zshrc` | Shell integration (backed up before modification) |
+| Path                                           | Purpose                                           |
+| ---------------------------------------------- | ------------------------------------------------- |
+| `~/.cache/terminal-ai/models/`                 | MLX models (Qwen/Phi safetensors)                 |
+| `~/Library/Caches/baseRT/models/`              | BaseRT .base models                               |
+| `~/.config/zsh/terminal-ai.zsh`                | Zsh widget + aliases                              |
+| `~/.local/bin/terminal-ai`                     | Python CLI (`tai`, `ghostty-ai` symlinks)         |
+| `~/Library/LaunchAgents/com.terminal-ai.plist` | BaseRT launch agent (disabled by default)         |
+| `~/.zshrc`                                     | Shell integration (backed up before modification) |
 
 ## Troubleshooting
 
@@ -163,7 +179,7 @@ The server isn't running. Start it manually:
 
 ```bash
 # BaseRT
-~/.basert/basert serve basecompute/Qwen3-4B --port 18789 --idle-timeout 300 &
+~/.basert/basert serve Qwen/Qwen3.5-4B --port 18790 --idle-timeout 300 &
 
 # mlx_lm
 mlx_lm.server --model ~/.cache/terminal-ai/models/qwen3.5-4b-mlx-4bit --port 7821 &
@@ -195,11 +211,13 @@ The installer adds minimal bash config to `~/.bashrc`. For fish:
 
 ```fish
 # Add to ~/.config/fish/config.fish
-set -x TERMINAL_AI_URL "http://127.0.0.1:18789/v1/chat/completions"
-set -x TERMINAL_AI_MODEL "basecompute/Qwen3-4B"
+set -x TERMINAL_AI_URL "http://127.0.0.1:18790/v1/chat/completions"
+set -x TERMINAL_AI_MODEL "Qwen3.5-4B"
 # carapace for fish:
 carapace _carapace fish | source
 ```
+
+> The `??`/`Ctrl+G` NL→command widget is zsh-based and confirmed working on zsh. In bash/fish, use the `terminal-ai` CLI directly (e.g. `terminal-ai "list pods in production"`) — the widget hasn't been tested there.
 
 ## Architecture
 
@@ -220,7 +238,7 @@ carapace _carapace fish | source
 │                    ▼                     ▼                  │
 │           ┌───────────────┐      ┌───────────────┐          │
 │           │   BaseRT      │      │   mlx_lm      │          │
-│           │  :18789       │      │  :7821        │          │
+│           │  :18790       │      │  :7821        │          │
 │           │  (Metal)      │      │  (MLX)        │          │
 │           └───────────────┘      └───────────────┘          │
 └─────────────────────────────────────────────────────────────┘

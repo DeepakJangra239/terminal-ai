@@ -1,0 +1,25 @@
+# pi agent/session state — local only, never commit
+.pi/
+
+# python / macOS noise
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# local-only dev & research artifacts (not part of the shipped installer)
+eval/
+PLAN.md
+
+# large generated eval artifacts (deterministically regenerable via
+#   python3 eval/corpus.py && eval/run_eval.py && eval/judge*.py)
+eval/results*.jsonl
+eval/verdicts*.jsonl
+eval/v_*.jsonl
+eval/judge_flags.jsonl
+eval/sample.jsonl
+eval/ab_*.jsonl
+
+# local dev copies of the CLI/widget — the canonical source is embedded in
+# install-terminal-ai.sh (verified byte-identical); not read at install time,
+# so the installer stays standalone for curl one-liner users
+payloads/
