@@ -242,20 +242,27 @@ if [[ -z "$TERMINAL_AI_MODEL" ]]; then export TERMINAL_AI_MODEL="Qwen3.5-4B"; fi
 export GHOSTTY_AI_URL="$TERMINAL_AI_URL"; export GHOSTTY_AI_MODEL="$TERMINAL_AI_MODEL"
 
 _terminal_ai_call() {
-  local nl="$1" mode="${2:-translate}" cmd
+  local nl="$1" mode="${2:-translate}" cmd err
   # resolve the canonical CLI (installed at ~/.local/bin/terminal-ai)
   local cli
   if command -v terminal-ai >/dev/null 2>&1; then cli="terminal-ai"
   elif [[ -x "$HOME/.local/bin/terminal-ai" ]]; then cli="$HOME/.local/bin/terminal-ai"
-  else return 1; fi
+  else print -r -- "terminal-ai error: CLI not found at ~/.local/bin/terminal-ai (re-run install-terminal-ai.sh)" >&2; return 1; fi
   if [[ "$mode" == "explain" ]]; then
-    cmd=$($cli --mode explain "$nl" 2>/dev/null); [[ -z "$cmd" ]] && return 1
-    print -r -- "$cmd"; return 0
+    err=$($cli --mode explain "$nl" 2>&1); [[ -z "$err" ]] && { print -r -- "terminal-ai error: empty result (is server on $TERMINAL_AI_URL?)" >&2; return 1; }
+    # CLI prints errors as "error: ..." on stdout-with-nonzero or stderr-captured text
+    if [[ "$err" == "error:"* || "$err" == "fail:"* ]]; then print -r -- "terminal-ai error: $err (server $TERMINAL_AI_URL?)" >&2; return 1; fi
+    print -r -- "$err"; return 0
   fi
   # translate / reason -> delegate to canonical CLI (does value-injection, validation, retry, router)
   local cfg="general"; [[ "$mode" == "reason" ]] && cfg="coding"
-  cmd=$($cli --mode translate --config "$cfg" "$nl" 2>/dev/null)
-  [[ -z "$cmd" ]] && return 1
+  cmd=$($cli --mode translate --config "$cfg" "$nl" 2>&1); local rc=$?
+  if [[ $rc -ne 0 || -z "$cmd" ]]; then
+    [[ -z "$cmd" ]] && cmd="(no output)"
+    print -r -- "terminal-ai error: $cmd (is server on $TERMINAL_AI_URL? try: ~/.basert/basert serve Qwen/Qwen3.5-4B --port 18790 &)" >&2
+    return 1
+  fi
+  if [[ "$cmd" == "error:"* ]]; then print -r -- "terminal-ai error: $cmd (server $TERMINAL_AI_URL?)" >&2; return 1; fi
   print -r -- "$cmd"
 }
 
@@ -282,7 +289,8 @@ zle -N terminal-ai-widget; bindkey '^G' terminal-ai-widget; bindkey '^X^G' termi
 zle -N ghostty-ai-widget 2>/dev/null; bindkey '^G' terminal-ai-widget 2>/dev/null
 __terminal_ai_prefix() {
   if [[ "$1" == "??" ]]; then shift; local nl="$*"; [[ -z "$nl" ]] && { zle terminal-ai-widget 2>/dev/null || terminal-ai-widget; return; }
-    local cmd; cmd=$(_terminal_ai_call "$nl" "translate"); [[ -n "$cmd" ]] && { print -z -- "$cmd"; echo "→ $cmd"; }; fi
+    local cmd; cmd=$(_terminal_ai_call "$nl" "translate")
+    if [[ -n "$cmd" ]]; then print -z -- "$cmd"; echo "→ $cmd"; else echo "terminal-ai: no result (is server on $TERMINAL_AI_URL?) — run: ~/.basert/basert serve Qwen/Qwen3.5-4B --port 18790 &" >&2; return 1; fi; fi
 }
 alias '??'='noglob __terminal_ai_prefix ??'
 alias 'ghostty-ai'='terminal-ai'
@@ -507,9 +515,21 @@ def _http(url, payload, timeout=60):
         t = t.strip().split("\n")[0].strip()
     return t
 
-def call(prompt, mode="translate", model=None, url=None, config=None, retries=2):
+def call(prompt, mode="translate", model=None, url=None, config=None, retries=2, use_router=True):
     model = model or DEFAULT_MODEL
     url = url or DEFAULT_URL
+    # Deterministic fast-path: answer common intents without any network,
+    # so ?? keeps working (instantly) even when the LLM server is down.
+    if use_router and mode == "translate":
+        try:
+            hit = router(prompt)
+        except Exception:
+            hit = None
+        if hit:
+            ok, _reason = validate(hit, prompt)
+            if ok:
+                return hit
+            # router miss on validation falls through to the LLM below
     system = SYSTEM_E if mode == "explain" else SYSTEM_T
     cfg = dict(config or (CONFIG_CODING if mode == "explain" else CONFIG_GENERAL))
     user_prompt = build_prompt(prompt)
@@ -539,20 +559,26 @@ def call(prompt, mode="translate", model=None, url=None, config=None, retries=2)
     return cmd
 
 # --- auto-start fallback (fresh installs) ------------------------------------
-def ensure_server(url, model=None):
+def ensure_server(url, model=None, wait_secs=60):
     """Best-effort: start BaseRT serving the configured model if it is down.
 
     Ports follow the live layout: Qwen3.5-4B on 18790, Qwen3-4B baseline on 18789.
     (Lesson: basert pull Qwen3.5-4B fails — the installer does HF download +
-    `basert convert`; here we only start the server, no downloads.)"""
+    `basert convert`; here we only start the server, no downloads.)
+    Returns True if the server responds, False otherwise (caller surfaces it)."""
+    probe = url.replace("/v1/chat/completions", "/v1/models")
     try:
-        urllib.request.urlopen(url.replace("/v1/chat/completions", "/v1/models"), timeout=2).read()
-        return
+        urllib.request.urlopen(probe, timeout=2).read()
+        return True
     except Exception:
         pass
+    # Only auto-start known BaseRT ports; custom/unknown ports fail fast
+    # so router fast-paths and error messages don't stall for 60s.
+    if "18789" not in url and "18790" not in url:
+        return False
     basert = os.path.expanduser("~/.basert/basert")
     if not os.path.exists(basert):
-        return
+        return False
     model = model or DEFAULT_MODEL
     if "18790" in url:
         port = "18790"
@@ -560,17 +586,26 @@ def ensure_server(url, model=None):
     else:
         port = "18789"
         serve_model = model if model.startswith("basecompute/") else "basecompute/Qwen3-4B"
-    subprocess.Popen([basert, "serve", serve_model,
-                      "--port", port, "--host", "127.0.0.1", "--idle-timeout", "300",
-                      "--model-dir", os.path.expanduser("~/Library/Caches/baseRT/models")],
-                     stdout=open("/tmp/terminal-ai.log", "w"), stderr=open("/tmp/terminal-ai.log", "w"))
-    for _ in range(8):
+    log_path = "/tmp/terminal-ai.log"
+    try:
+        with open(log_path, "a") as log:
+            log.write(f"\n--- ensure_server {time.strftime('%Y-%m-%d %H:%M:%S')} : {basert} serve {serve_model} --port {port} --idle-timeout 300 ---\n")
+            log.flush()
+            proc = subprocess.Popen([basert, "serve", serve_model,
+                              "--port", port, "--host", "127.0.0.1", "--idle-timeout", "300",
+                              "--model-dir", os.path.expanduser("~/Library/Caches/baseRT/models")],
+                             stdout=log, stderr=subprocess.STDOUT)
+            log.write(f"pid={proc.pid}\n")
+    except Exception:
+        return False
+    for _ in range(max(1, wait_secs)):
         time.sleep(1)
         try:
-            urllib.request.urlopen(url.replace("/v1/chat/completions", "/v1/models"), timeout=2).read()
-            return
+            urllib.request.urlopen(probe, timeout=2).read()
+            return True
         except Exception:
             pass
+    return False
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
@@ -580,6 +615,8 @@ if __name__ == "__main__":
     p.add_argument("--url", default=None)
     p.add_argument("--config", default=None, choices=["general", "coding"])
     p.add_argument("--no-retry", action="store_true")
+    p.add_argument("--no-router", action="store_true",
+                   help="skip the deterministic router (for eval A/B)")
     p.add_argument("--check", action="store_true")
     a = p.parse_args()
     if a.check:
@@ -590,7 +627,7 @@ if __name__ == "__main__":
             print(f"ok: {a.url or DEFAULT_URL}")
             sys.exit(0)
         except Exception as e:
-            print(f"fail: {e}")
+            print(f"fail: {e} (server {a.url or DEFAULT_URL}? start: ~/.basert/basert serve Qwen/Qwen3.5-4B --port 18790 --idle-timeout 300 &)")
             sys.exit(1)
     prompt = " ".join(a.prompt).strip() or (sys.stdin.read().strip() if not sys.stdin.isatty() else "")
     if prompt.startswith("??"):
@@ -598,13 +635,31 @@ if __name__ == "__main__":
     if not prompt:
         p.print_help()
         sys.exit(1)
-    ensure_server(a.url or DEFAULT_URL)
+    # Fast-path: deterministic router answers without touching the network,
+    # so common queries stay instant even when the server is down/starting.
+    if not a.no_router and a.mode == "translate":
+        try:
+            _hit = router(prompt)
+        except Exception:
+            _hit = None
+        if _hit:
+            _ok, _ = validate(_hit, prompt)
+            if _ok:
+                print(_hit)
+                sys.exit(0)
+    alive = ensure_server(a.url or DEFAULT_URL)
     cfg = CONFIG_CODING if a.config == "coding" else CONFIG_GENERAL
     retries = 0 if a.no_retry else 2
     try:
-        print(call(prompt, mode=a.mode, model=a.model, url=a.url, config=cfg, retries=retries))
+        print(call(prompt, mode=a.mode, model=a.model, url=a.url, config=cfg, retries=retries,
+                   use_router=not a.no_router))
     except Exception as e:
-        print(f"error: {e}", file=sys.stderr)
+        hint = ""
+        if not alive:
+            hint = (f" (server {a.url or DEFAULT_URL} did not respond after auto-start;"
+                    f" start manually: ~/.basert/basert serve Qwen/Qwen3.5-4B --port 18790"
+                    f" --idle-timeout 300 &; log: /tmp/terminal-ai.log)")
+        print(f"error: {e}{hint}", file=sys.stderr)
         sys.exit(1)
 WCLI
   chmod +x "$BIN_DIR/terminal-ai"
@@ -629,7 +684,7 @@ write_launchers() {
     <string>$HOME/.basert/basert</string><string>serve</string><string>$PL_MODEL</string>
     <string>--port</string><string>$PL_PORT</string><string>--host</string><string>127.0.0.1</string><string>--idle-timeout</string><string>300</string><string>--model-dir</string><string>$HOME/Library/Caches/baseRT/models</string>
   </array>
-  <key>RunAtLoad</key><false/><key>KeepAlive</key><false/>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><false/>
   <key>StandardOutPath</key><string>/tmp/terminal-ai.log</string>
   <key>StandardErrorPath</key><string>/tmp/terminal-ai.err</string>
 </dict></plist>
@@ -663,13 +718,13 @@ main() {
     basert)
       pkill -f "basert.*$AI_PORT" 2>/dev/null || true; sleep 1
       nohup "$HOME/.basert/basert" serve "$AI_SERVE" --port "$AI_PORT" --host 127.0.0.1 --idle-timeout 300 --model-dir "$HOME/Library/Caches/baseRT/models" > /tmp/terminal-ai.log 2>&1 &
-      for i in 1 2 3 4 5 6 7 8 9 10; do curl -s "http://127.0.0.1:$AI_PORT/v1/models" >/dev/null 2>&1 && break; sleep 1; done
+      for i in $(seq 1 60); do curl -s "http://127.0.0.1:$AI_PORT/v1/models" >/dev/null 2>&1 && break; sleep 1; done
       curl -s "http://127.0.0.1:$AI_PORT/v1/models" >/dev/null 2>&1 && ok "BaseRT on $AI_PORT ready ($AI_SERVE, idle-timeout 300, auto-unload without killing)" || warn "BaseRT not yet on $AI_PORT — run: ~/.basert/basert serve $AI_SERVE --port $AI_PORT --idle-timeout 300 &"
       ;;
     mlx)
       pkill -f "mlx_lm.server.*$MLX_PORT" 2>/dev/null || true; sleep 1
       nohup /opt/homebrew/anaconda3/bin/mlx_lm.server --model "$MODEL_DIR/qwen3.5-4b-mlx-4bit" --port "$MLX_PORT" --host 127.0.0.1 > /tmp/terminal-ai.log 2>&1 &
-      for i in 1 2 3 4 5 6 7 8 9 10; do curl -s "http://127.0.0.1:$MLX_PORT/v1/models" >/dev/null 2>&1 && break; sleep 1; done
+      for i in $(seq 1 60); do curl -s "http://127.0.0.1:$MLX_PORT/v1/models" >/dev/null 2>&1 && break; sleep 1; done
       curl -s "http://127.0.0.1:$MLX_PORT/v1/models" >/dev/null 2>&1 && ok "mlx_lm on $MLX_PORT ready" || warn "mlx_lm not yet — run: ~/.cache/terminal-ai/scripts/serve_mlx.sh qwen &"
       ;;
     omlx)
